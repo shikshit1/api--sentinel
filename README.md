@@ -15,16 +15,17 @@ API Sentinel is an automated API testing and regression detection engine designe
 - [x] **Phase 2: Deterministic Test Generation & Safe HTTP Execution Engine**
   - Deterministic test generator producing positive, negative (missing required fields, invalid types, enum violations, boundary violations), and response JSON schema contract test cases.
   - Documented vs inferred response expectations (no invented status codes).
-  - Defense-in-depth SSRF protection:
-    - Preflight DNS checks.
-    - Connection-level DNS rebinding and TOCTOU defense on custom HTTP/HTTPS agents.
-    - Blocking of loopback (`127.0.0.0/8`, `::1`), private (RFC 1918), link-local (`169.254.0.0/16`), cloud metadata (`169.254.169.254`), multicast, and carrier-grade NAT.
-    - Redirects disabled by default.
-    - Strict per-request timeouts (5000ms) and response byte capping (1MB cutoff).
-    - Concurrency worker pool limits.
-    - Credential and authorization header redaction in recorded test runs.
+  - Defense-in-depth SSRF protection (connection-level DNS rebinding defense, private/loopback/cloud metadata IP blocking, disabled redirects, timeouts, byte caps, redaction).
   - Local isolated Mock API server for deterministic verification.
-  - Automated unit and integration test suite (60 tests passing).
+- [x] **Phase 3: Regression Diffing Engine & Rules-Based Failure Classifier**
+  - Deterministic, zero-cost regression analysis comparing baseline and current `TestRunReport` snapshots.
+  - Test matching by stable `testCaseId` or canonical composite key (`method:url:type:category`).
+  - Detection of duplicates as `INDETERMINATE` to prevent silent misattribution.
+  - Classification of state transitions: `REGRESSION`, `FIXED`, `UNCHANGED_PASS`, `UNCHANGED_FAIL`, `ADDED`, `REMOVED`, `INDETERMINATE`.
+  - Orthogonal detection of status code changes, schema contract deviations, and latency degradation (configurable threshold).
+  - Deterministic rules-based failure classifier with strict precedence (SSRF block, timeout, size limit, schema violation, status code mismatch, network error, unknown failure).
+  - REST API endpoint: `POST /api/regressions/compare` with Zod validation.
+  - Automated unit and integration test suite (89 tests passing).
 
 ---
 
@@ -80,22 +81,38 @@ Parses and normalizes an OpenAPI specification into endpoints, parameters, and s
 
 ### `POST /api/tests/generate`
 Generates a deterministic test suite from an OpenAPI spec.
-- **Request Body**:
-  ```json
-  {
-    "specContent": "openapi: 3.0.3\n..."
-  }
-  ```
 
 ### `POST /api/tests/execute`
 Executes test cases against an authorized remote target URL with connection-level SSRF defense, timeouts, and byte limits.
+
+### `POST /api/regressions/compare`
+Compares a baseline `TestRunReport` with a current `TestRunReport` and generates a regression analysis.
 - **Request Body**:
   ```json
   {
-    "targetBaseUrl": "https://api.example.com",
-    "testCases": [...],
-    "concurrencyLimit": 3,
-    "timeoutMs": 5000
+    "baselineRun": { "results": [...] },
+    "currentRun": { "results": [...] },
+    "latencyThresholdMs": 200
+  }
+  ```
+- **Response (200)**:
+  ```json
+  {
+    "success": true,
+    "data": {
+      "summary": {
+        "totalCompared": 5,
+        "regressions": 1,
+        "fixed": 1,
+        "unchangedPass": 2,
+        "unchangedFail": 0,
+        "added": 1,
+        "removed": 0,
+        "indeterminate": 0,
+        "latencyDegradations": 1
+      },
+      "comparisons": [...]
+    }
   }
   ```
 
@@ -110,7 +127,4 @@ Executes test cases against an authorized remote target URL with connection-leve
 4. **No Redirects**: Automatic HTTP redirects are disabled.
 5. **Payload Redaction**: Sensitive headers (`Authorization`, `Cookie`, `X-Api-Key`, etc.) and payload secrets are redacted to `[REDACTED]` prior to test recording.
 6. **No Code Execution**: No `eval` or dynamic code execution occurs from imported specifications.
-
-### Unresolved Security Limitations
-1. **Target Authorization Scope**: When running via the standalone `POST /api/tests/execute` API without project database persistence, authorization defaults to verifying that the target URL is a valid remote public HTTP/HTTPS target. User/project ownership binding will be integrated in Phase 4.
-2. **Reverse Proxy / Upstream DNS Caching**: While socket-level verification protects the Node.js application process, environments behind transparent forward proxies or corporate HTTP gateways must also enforce network-level egress firewalls.
+7. **Stateless Regression Comparison**: The regression diff engine processes provided report data in-memory without making outbound network requests.
