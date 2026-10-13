@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { specRouter } from './routes/spec.routes.js';
+import { testRouter } from './routes/test.routes.js';
 import { errorHandler } from './middleware/error-handler.middleware.js';
 import { getStorageConfig } from './config/storage.config.js';
 
@@ -31,6 +32,7 @@ export function createApp() {
 
   // Domain routes
   app.use('/api/specs', specRouter);
+  app.use('/api/tests', testRouter);
 
   // Global error handler
   app.use(errorHandler);

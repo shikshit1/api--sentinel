@@ -4,14 +4,27 @@ API Sentinel is an automated API testing and regression detection engine designe
 
 ---
 
-## Current Status: Phase 1 (Week 1 Vertical Slice)
+## Status
 
-- [x] **Monorepo Architecture**: Setup with npm workspaces (`shared`, `server`, `client`) and strict TypeScript configurations.
-- [x] **Storage Mode Guard**: Explicit configuration via `STORAGE_MODE=demo` or `STORAGE_MODE=mongodb`. Fail-fast startup if MongoDB is unreachable when configured.
-- [x] **OpenAPI Parser & Dereferencer**: Parses OpenAPI 3.0.x and 3.1.x specifications (JSON & YAML), validates schemas with `@apidevtools/swagger-parser`, and normalizes operations.
-- [x] **REST API**: `POST /api/specs/parse` with Zod schema validation and structured error responses.
-- [x] **Interactive UI**: Minimal React + Vite + Tailwind frontend supporting spec upload, live pasting, 1-click sample spec loading, and expandable operation inspectors.
-- [x] **Automated Tests**: Unit tests for parser and storage guards, Supertest integration tests for REST routes.
+- [x] **Phase 1: Foundation & OpenAPI Ingestion**
+  - Monorepo architecture (`shared`, `server`, `client`) with strict TypeScript configurations.
+  - Explicit storage mode guard (`STORAGE_MODE=demo` or `STORAGE_MODE=mongodb`) with fail-fast startup behavior.
+  - OpenAPI 3.0.x and 3.1.x parser dereferencing schema components via `@apidevtools/swagger-parser`.
+  - `POST /api/specs/parse` endpoint with Zod validation.
+  - Interactive React UI for uploading, pasting, and inspecting specs.
+- [x] **Phase 2: Deterministic Test Generation & Safe HTTP Execution Engine**
+  - Deterministic test generator producing positive, negative (missing required fields, invalid types, enum violations, boundary violations), and response JSON schema contract test cases.
+  - Documented vs inferred response expectations (no invented status codes).
+  - Defense-in-depth SSRF protection:
+    - Preflight DNS checks.
+    - Connection-level DNS rebinding and TOCTOU defense on custom HTTP/HTTPS agents.
+    - Blocking of loopback (`127.0.0.0/8`, `::1`), private (RFC 1918), link-local (`169.254.0.0/16`), cloud metadata (`169.254.169.254`), multicast, and carrier-grade NAT.
+    - Redirects disabled by default.
+    - Strict per-request timeouts (5000ms) and response byte capping (1MB cutoff).
+    - Concurrency worker pool limits.
+    - Credential and authorization header redaction in recorded test runs.
+  - Local isolated Mock API server for deterministic verification.
+  - Automated unit and integration test suite (60 tests passing).
 
 ---
 
@@ -42,7 +55,7 @@ npm run build
 npm run typecheck
 ```
 
-### 4. Run Automated Tests
+### 4. Run Automated Test Suite
 ```bash
 npm test
 ```
@@ -57,51 +70,47 @@ npm run dev
 
 ---
 
-## Phase 1 API Endpoints
+## API Endpoints
 
 ### `GET /api/health`
 Returns server status and active storage mode.
-```json
-{
-  "status": "ok",
-  "service": "api-sentinel",
-  "storage": {
-    "mode": "demo",
-    "isDemo": true
-  }
-}
-```
 
 ### `POST /api/specs/parse`
-Parses and normalizes an OpenAPI specification.
+Parses and normalizes an OpenAPI specification into endpoints, parameters, and schemas.
+
+### `POST /api/tests/generate`
+Generates a deterministic test suite from an OpenAPI spec.
 - **Request Body**:
   ```json
   {
-    "specContent": "openapi: 3.0.3\n...",
-    "sourceFormat": "auto"
+    "specContent": "openapi: 3.0.3\n..."
   }
   ```
-- **Success Response (200)**:
+
+### `POST /api/tests/execute`
+Executes test cases against an authorized remote target URL with connection-level SSRF defense, timeouts, and byte limits.
+- **Request Body**:
   ```json
   {
-    "success": true,
-    "data": {
-      "title": "Task Management API",
-      "version": "1.0.0",
-      "openapiVersion": "3.0.3",
-      "servers": ["https://api.example.com/v1"],
-      "operationCount": 3,
-      "operations": [...]
-    }
+    "targetBaseUrl": "https://api.example.com",
+    "testCases": [...],
+    "concurrencyLimit": 3,
+    "timeoutMs": 5000
   }
   ```
-- **Error Responses**:
-  - `400 Bad Request`: Payload validation or YAML/JSON syntax errors (`VALIDATION_ERROR`, `INVALID_SYNTAX`, `EMPTY_SPEC_CONTENT`).
-  - `422 Unprocessable Entity`: OpenAPI schema violations (`SPEC_VALIDATION_ERROR`).
 
 ---
 
-## Next Milestone (Phase 2 / Week 2)
-- Deterministic positive and negative test generator.
-- Connection-level SSRF defense (DNS rebinding mitigations, IP address range filtering, redirect blocking).
-- Dedicated security test suite.
+## SSRF Defense Architecture & Security Limitations
+
+### Implemented Protections
+1. **Connection-level DNS Rebinding Defense**: Inspects resolved IP addresses within the socket creation lookup and verifies `socket.remoteAddress` at connection establishment, destroying sockets before request payload transmission if bound to a forbidden IP.
+2. **IP Range Restrictions**: Rejects loopback (`127.0.0.0/8`, `::1`), private networks (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local (`169.254.0.0/16`), cloud metadata (`169.254.169.254`), multicast (`224.0.0.0/4`), broadcast, and carrier-grade NAT (`100.64.0.0/10`).
+3. **Strict Protocol Whitelist**: Allows only `http:` and `https:`.
+4. **No Redirects**: Automatic HTTP redirects are disabled.
+5. **Payload Redaction**: Sensitive headers (`Authorization`, `Cookie`, `X-Api-Key`, etc.) and payload secrets are redacted to `[REDACTED]` prior to test recording.
+6. **No Code Execution**: No `eval` or dynamic code execution occurs from imported specifications.
+
+### Unresolved Security Limitations
+1. **Target Authorization Scope**: When running via the standalone `POST /api/tests/execute` API without project database persistence, authorization defaults to verifying that the target URL is a valid remote public HTTP/HTTPS target. User/project ownership binding will be integrated in Phase 4.
+2. **Reverse Proxy / Upstream DNS Caching**: While socket-level verification protects the Node.js application process, environments behind transparent forward proxies or corporate HTTP gateways must also enforce network-level egress firewalls.
